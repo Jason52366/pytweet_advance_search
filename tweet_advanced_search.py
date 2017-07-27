@@ -7,8 +7,10 @@ import requests
 from bs4 import BeautifulSoup as bs
 import sys
 
-FETCH_LOG = "tweet.log"
-FETCH_SAVE_LOG = "tweet_fetch.log"
+DATA_DIR = "data"
+
+FETCH_LOG = None
+FETCH_SAVE_LOG = None
 
 def print_log(msg_str):
   y4m2d2, hms = get_now(date_slicer="-", time_slicer=":")
@@ -172,6 +174,7 @@ class TweetSearchAdvanced:
         content_list.append(content)
     except Exception as e:
       print_log("First Request Error. {}".format(e))
+      gmt0_dt, content_list = self._first_fetch_tweet()
     return gmt0_dt, content_list
 
   def _fetch_next(self):
@@ -189,7 +192,8 @@ class TweetSearchAdvanced:
         gmt0_dt, content = parse_tweet_div(tweet_div)
         content_list.append(content)
     except Exception as e:
-      print_log("First Request Error. {}".format(e))
+      print_log("Next Request Error. {}".format(e))
+      gmt0_dt, content_list = self._fetch_next()
     return gmt0_dt, content_list
 
 def parse_tweet_div(tweet_div):
@@ -200,13 +204,10 @@ def parse_tweet_div(tweet_div):
 
   # tweet send 2 time-information, post_local_dt = post's location time. post_system_time_ts = post_local_dt convert to fetch machine time.
   time_a = tweet_div.find(attrs={"class": "tweet-timestamp"})
-  # post_local_dt = datetime.datetime.strptime(time_a.get("title"), "%I:%M %p - %d %b %Y")
 
   post_system_time_ts = int(time_a.find("span").get("data-time"))
   gmt0_ts = post_system_time_ts - get_sys_gmt() * 3600
   gmt0_dt = ts2dt(ts=gmt0_ts)
-
-  # post_local_time_str = post_local_dt.strftime("%Y-%m-%d %H:%M")
   gmt0_time_str = gmt0_dt.strftime("%Y-%m-%d %H:%M+00:00")
 
   tweet_content = tweet_div.find("p", attrs={"class": "tweet-text"}).text
@@ -217,22 +218,23 @@ def parse_tweet_div(tweet_div):
   hash_tags = "" if len(hash_tag_list) == 0 else ",".join([tag_a.text.replace("#", "") for tag_a in hash_tag_list])
   content_dict = dict()
 
-  content_dict["id"] = "tweet_{}".format(tweet_id)
-  content_dict["author"] = author_show_name
-  content_dict["link"] = tweet_url
+
+  content_dict["id"]        = "{}".format(tweet_id)
+  content_dict["author"]    = author_show_name
+  content_dict["link"]      = tweet_url
   content_dict["timestamp"] = gmt0_time_str  # gmt0 timezone, "%Y-%m-%d %H:%M%z"
-  content_dict["ts"] = int(gmt0_ts)          # gmt0 timezone
-  content_dict["ts_tz"] = "Etc/GMT"
-  content_dict["title"] = tweet_content
-  content_dict["body"] = tweet_content
-
+  content_dict["ts"]        = int(gmt0_ts)  # gmt0 timezone
+  content_dict["ts_tz"]     = "Etc/GMT"
+  content_dict["tweet"]     = tweet_content
   # additional
-  content_dict["like_num"] = int(like_num)
-  content_dict["reply_num"] = int(reply_num)
+  content_dict["like_num"]    = int(like_num)
+  content_dict["reply_num"]   = int(reply_num)
   content_dict["author_link"] = author_page_url
-  content_dict["tags"] = hash_tags  # "tag1,tag2,tag3"
-  return gmt0_dt, content_dict
+  content_dict["tags"]        = hash_tags  # "tag1,tag2,tag3"
 
+  # you can add a save tweet function here.
+  print(content_dict["tweet"])
+  return gmt0_dt, content_dict
 
 def main(from_date, to_date):
   fetch_max_position = None
@@ -240,27 +242,41 @@ def main(from_date, to_date):
     with open(FETCH_SAVE_LOG, "r") as f:
       fetch_max_position = f.readlines()[0]
   tsa = TweetSearchAdvanced(fetch_max_position=fetch_max_position)
-
-  # add some key word
   tsa.add_word_to_contain_any("iphone")
   tsa.add_word_to_contain_any("ipad")
+  tsa.add_word_to_contain_any("macbook")
+  tsa.add_word_to_contain_any("ios")
   tsa.set_lang("en")
   tsa.set_from_date(from_date)
   tsa.set_to_date(to_date)
 
-  # start to fetch
+  pre_dt, s_dt = None, datetime.datetime.strptime(from_date, "%Y%m%d")
   stop_fetch = False
   while not stop_fetch:
-    last_dt, tweet_list = tsa.fetch_tweets()
-    print_log("{}".format(last_dt))
-    for tweet in tweet_list:
-      print(tweet["body"])
-    stop_fetch = len(tweet_list) == 0  # no more tweet.
+    last_dt, content_list = tsa.fetch_tweets()
+    if last_dt is not None:
+      print_log("{}".format(last_dt))
+      pre_dt = last_dt
+    else:  # data is None
+      print_log("shift 10 minute")
+      max_position = tsa.fetch_max_position
+      max_tokens = max_position.split("-")
+      max_tokens[1] = str(int(max_tokens[1]) - 4200000000 * 600)
+      tsa.fetch_max_position = "-".join(max_tokens)
+      pre_dt = None if pre_dt is None else pre_dt - datetime.timedelta(minutes=10)
     with open(FETCH_SAVE_LOG, "w+") as f:
       f.write(tsa.fetch_max_position)
+    stop_fetch = False if pre_dt is None else s_dt > pre_dt
     time.sleep(0.5)
 
+
 if __name__ == '__main__':
-  assert len(sys.argv) == 3, "python advanced_fetcher.py 20170101 20170120"
+  if not os.path.exists(DATA_DIR):
+    os.mkdir(DATA_DIR)
+  assert len(sys.argv) == 3, print("[python tweet_advanced_search.py 20170701 20170710]")
+
   s_y4m2d2, e_y4m2d2 = sys.argv[1], sys.argv[2]
+  global FETCH_LOG, FETCH_SAVE_LOG
+  FETCH_LOG = "{}/{}_{}.log".format(DATA_DIR, s_y4m2d2, e_y4m2d2)
+  FETCH_SAVE_LOG = "{}/{}_{}_maxpos.log".format(DATA_DIR, s_y4m2d2, e_y4m2d2)
   main(s_y4m2d2, e_y4m2d2)
